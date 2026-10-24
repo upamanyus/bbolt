@@ -79,18 +79,21 @@ func WriteInodeToPage(inodes Inodes, p *Page) uint32 {
 		// byte pointer for next iteration.
 		sz := len(item.Key()) + len(item.Value())
 		b := UnsafeByteSlice(unsafe.Pointer(p), off, 0, sz)
+		// The element's pos is the offset of its data from the element,
+		// computed from offsets into p rather than from pointer values.
+		pos := uint32(off - (unsafe.Sizeof(*p) + p.PageElementSize()*uintptr(i)))
 		off += uintptr(sz)
 
 		// Write the page element.
 		if isLeaf {
 			elem := p.LeafPageElement(uint16(i))
-			elem.SetPos(uint32(uintptr(unsafe.Pointer(&b[0])) - uintptr(unsafe.Pointer(elem))))
+			elem.SetPos(pos)
 			elem.SetFlags(item.Flags())
 			elem.SetKsize(uint32(len(item.Key())))
 			elem.SetVsize(uint32(len(item.Value())))
 		} else {
 			elem := p.BranchPageElement(uint16(i))
-			elem.SetPos(uint32(uintptr(unsafe.Pointer(&b[0])) - uintptr(unsafe.Pointer(elem))))
+			elem.SetPos(pos)
 			elem.SetKsize(uint32(len(item.Key())))
 			elem.SetPgid(item.Pgid())
 			Assert(elem.Pgid() != p.Id(), "write: circular dependency occurred")

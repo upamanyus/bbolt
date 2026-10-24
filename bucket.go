@@ -129,7 +129,8 @@ func (b *Bucket) openBucket(value []byte) *Bucket {
 	// Read-only transactions can point directly at the mmap entry.
 	if b.tx.writable && !unaligned {
 		child.InBucket = &common.InBucket{}
-		*child.InBucket = *(*common.InBucket)(unsafe.Pointer(&value[0]))
+		ib := *(*common.InBucket)(unsafe.Pointer(&value[0])) // through a local, as in common.Meta.Copy
+		*child.InBucket = ib
 	} else {
 		child.InBucket = (*common.InBucket)(unsafe.Pointer(&value[0]))
 	}
@@ -761,7 +762,8 @@ func (b *Bucket) spill() error {
 			// Update the child bucket header in this bucket.
 			value = make([]byte, unsafe.Sizeof(common.InBucket{}))
 			var bucket = (*common.InBucket)(unsafe.Pointer(&value[0]))
-			*bucket = *child.InBucket
+			ib := *child.InBucket // through a local, as in common.Meta.Copy
+			*bucket = ib
 		}
 
 		// Skip writing the bucket if there are no materialized nodes.
@@ -840,7 +842,8 @@ func (b *Bucket) write() []byte {
 
 	// Write a bucket header.
 	var bucket = (*common.InBucket)(unsafe.Pointer(&value[0]))
-	*bucket = *b.InBucket
+	ib := *b.InBucket // through a local, as in common.Meta.Copy
+	*bucket = ib
 
 	// Convert byte slice to a fake page and write the root node.
 	var p = (*common.Page)(unsafe.Pointer(&value[common.BucketHeaderSize]))

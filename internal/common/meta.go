@@ -35,7 +35,10 @@ func (m *Meta) Validate() error {
 
 // Copy copies one meta object to another.
 func (m *Meta) Copy(dest *Meta) {
-	*dest = *m
+	// Copy through a local: a formal model of Go cannot follow a whole-struct
+	// copy between two pointers that might partially overlap.
+	v := *m
+	*dest = v
 }
 
 // Write writes the meta onto a page.

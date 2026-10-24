@@ -55,7 +55,8 @@ func (tx *Tx) init(db *DB) {
 	// Copy over the root bucket.
 	tx.root = newBucket(tx)
 	tx.root.InBucket = &common.InBucket{}
-	*tx.root.InBucket = *(tx.meta.RootBucket())
+	root := *tx.meta.RootBucket() // through a local, as in common.Meta.Copy
+	*tx.root.InBucket = root
 
 	// Increment the transaction id and add a page cache for writable transactions.
 	if tx.writable {
@@ -431,7 +432,8 @@ func (tx *Tx) WriteTo(w io.Writer) (n int64, err error) {
 	buf := make([]byte, tx.db.pageSize)
 	page := (*common.Page)(unsafe.Pointer(&buf[0]))
 	page.SetFlags(common.MetaPageFlag)
-	*page.Meta() = *tx.meta
+	m := *tx.meta // through a local, as in common.Meta.Copy
+	*page.Meta() = m
 
 	// Write meta 0.
 	page.SetId(0)

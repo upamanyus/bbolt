@@ -4,24 +4,23 @@ import (
 	"unsafe"
 )
 
+// The helpers below use unsafe.Add and unsafe.Slice rather than uintptr
+// arithmetic, so that every pointer they return is derived from base without a
+// conversion from uintptr, which a formal model of Go cannot follow. They
+// behave as before.
+
 func UnsafeAdd(base unsafe.Pointer, offset uintptr) unsafe.Pointer {
-	return unsafe.Pointer(uintptr(base) + offset)
+	return unsafe.Add(base, offset)
 }
 
 func UnsafeIndex(base unsafe.Pointer, offset uintptr, elemsz uintptr, n int) unsafe.Pointer {
-	return unsafe.Pointer(uintptr(base) + offset + uintptr(n)*elemsz)
+	return unsafe.Add(base, offset+uintptr(n)*elemsz)
 }
 
+// UnsafeByteSlice returns the bytes [offset+i, offset+j) from base, as a slice
+// of capacity j-i. It slices after unsafe.Slice rather than starting at
+// offset+i, so that for i == j at the very end of an allocation it does not
+// form a pointer one past the end.
 func UnsafeByteSlice(base unsafe.Pointer, offset uintptr, i, j int) []byte {
-	// See: https://github.com/golang/go/wiki/cgo#turning-c-arrays-into-go-slices
-	//
-	// This memory is not allocated from C, but it is unmanaged by Go's
-	// garbage collector and should behave similarly, and the compiler
-	// should produce similar code.  Note that this conversion allows a
-	// subslice to begin after the base address, with an optional offset,
-	// while the URL above does not cover this case and only slices from
-	// index 0.  However, the wiki never says that the address must be to
-	// the beginning of a C allocation (or even that malloc was used at
-	// all), so this is believed to be correct.
-	return (*[MaxAllocSize]byte)(UnsafeAdd(base, offset))[i:j:j]
+	return unsafe.Slice((*byte)(unsafe.Add(base, offset)), j)[i:j:j]
 }
