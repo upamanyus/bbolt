@@ -147,13 +147,17 @@ type DB struct {
 	mmaplock sync.RWMutex // Protects mmap access during remapping.
 	statlock sync.RWMutex // Protects stats access.
 
-	ops struct {
-		writeAt func(b []byte, off int64) (n int, err error)
-	}
+	ops dbOps
 
 	// Read only mode.
 	// When true, Update() and Begin(true) return ErrDatabaseReadOnly immediately.
 	readOnly bool
+}
+
+// dbOps is DB.ops: the operations a test may replace (goose translates no anonymous struct
+// with fields).
+type dbOps struct {
+	writeAt func(b []byte, off int64) (n int, err error)
 }
 
 // Path returns the path to currently open database file.
@@ -269,8 +273,12 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 		_ = db.close()
 		lg.Errorf("failed to get db file's stats (%s): %v", path, err)
 		return nil, statErr
-	} else if info.Size() == 0 {
-		// Initialize new files with meta pages.
+	} else if zero, zerr := db.metasZero(info.Size()); zerr != nil {
+		_ = db.close()
+		lg.Errorf("failed to read db file's meta pages (%s): %v", path, zerr)
+		return nil, zerr
+	} else if info.Size() == 0 || zero {
+		// Initialize new files, and files whose init was interrupted, with meta pages.
 		if err = db.init(); err != nil {
 			// clean up file descriptor on initialization fail
 			_ = db.close()
@@ -675,8 +683,22 @@ func (db *DB) init() error {
 	p.SetFlags(common.LeafPageFlag)
 	p.SetCount(0)
 
-	// Write the buffer to our data file.
-	if _, err := db.ops.writeAt(buf, 0); err != nil {
+	// Write the four pages with the meta pages zero, and sync, before the metas: a meta must
+	// never be durable before the freelist and root pages it points at, and a crash before the
+	// metas reach the disk leaves meta pages that Open recognizes as an interrupted init
+	// (all zero) and initializes again.
+	pages := make([]byte, db.pageSize*4)
+	copy(pages[db.pageSize*2:], buf[db.pageSize*2:])
+	if _, err := db.ops.writeAt(pages, 0); err != nil {
+		db.Logger().Errorf("writeAt failed: %w", err)
+		return err
+	}
+	if err := fdatasync(db); err != nil {
+		db.Logger().Errorf("[GOOS: %s, GOARCH: %s] fdatasync failed: %w", runtime.GOOS, runtime.GOARCH, err)
+		return err
+	}
+	// Then the two meta pages.
+	if _, err := db.ops.writeAt(buf[:db.pageSize*2], 0); err != nil {
 		db.Logger().Errorf("writeAt failed: %w", err)
 		return err
 	}
@@ -686,6 +708,26 @@ func (db *DB) init() error {
 	}
 
 	return nil
+}
+
+// metasZero reports whether every byte the file holds of its two meta pages is zero: an init
+// interrupted before its metas reached the disk (init writes the other pages first), which a
+// database never otherwise has.
+func (db *DB) metasZero(size int64) (bool, error) {
+	n := int64(db.pageSize * 2)
+	if size < n {
+		n = size
+	}
+	buf := make([]byte, n)
+	if _, err := db.file.ReadAt(buf, 0); err != nil {
+		return false, err
+	}
+	for _, c := range buf {
+		if c != 0 {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // Close releases all database resources.
@@ -1031,7 +1073,6 @@ func (b *batch) run() {
 	}
 	b.db.batchMu.Unlock()
 
-retry:
 	for len(b.calls) > 0 {
 		var failIdx = -1
 		err := b.db.Update(func(tx *Tx) error {
@@ -1052,14 +1093,14 @@ retry:
 			b.calls[failIdx], b.calls = b.calls[len(b.calls)-1], b.calls[:len(b.calls)-1]
 			// tell the submitter re-run it solo, continue with the rest of the batch
 			c.err <- trySolo
-			continue retry
+			continue
 		}
 
 		// pass success, or bolt internal errors, to all callers
 		for _, c := range b.calls {
 			c.err <- err
 		}
-		break retry
+		break
 	}
 }
 
