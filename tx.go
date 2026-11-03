@@ -435,30 +435,27 @@ func (tx *Tx) WriteTo(w io.Writer) (n int64, err error) {
 		f = tx.db.file
 	}
 
-	// Generate a meta page. We use the same page data for both meta pages.
+	// Generate the meta pages. Both point at the same tree. The current meta
+	// (this transaction's id) goes to page txid%2 and a meta with the previous
+	// id to the other page, as a commit would have left them: the next commit
+	// then writes the page that does not hold the current meta, so a torn meta
+	// write cannot destroy the only valid meta.
 	buf := make([]byte, tx.db.pageSize)
 	page := (*common.Page)(unsafe.Pointer(&buf[0]))
 	page.SetFlags(common.MetaPageFlag)
-	m := *tx.meta // through a local, as in common.Meta.Copy
-	*page.Meta() = m
-
-	// Write meta 0.
-	page.SetId(0)
-	page.Meta().SetChecksum(page.Meta().Sum64())
-	nn, err := w.Write(buf)
-	n += int64(nn)
-	if err != nil {
-		return n, fmt.Errorf("meta 0 copy: %s", err)
-	}
-
-	// Write meta 1 with a lower transaction id.
-	page.SetId(1)
-	page.Meta().DecTxid()
-	page.Meta().SetChecksum(page.Meta().Sum64())
-	nn, err = w.Write(buf)
-	n += int64(nn)
-	if err != nil {
-		return n, fmt.Errorf("meta 1 copy: %s", err)
+	for id := common.Pgid(0); id <= 1; id++ {
+		m := *tx.meta // through a local, as in common.Meta.Copy
+		*page.Meta() = m
+		page.SetId(id)
+		if common.Pgid(m.Txid()%2) != id {
+			page.Meta().DecTxid()
+		}
+		page.Meta().SetChecksum(page.Meta().Sum64())
+		nn, werr := w.Write(buf)
+		n += int64(nn)
+		if werr != nil {
+			return n, fmt.Errorf("meta %d copy: %s", id, werr)
+		}
 	}
 
 	// Copy data pages using a SectionReader to avoid affecting f's offset.
