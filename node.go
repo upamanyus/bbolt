@@ -234,13 +234,7 @@ func (n *node) splitTwo(pageSize uintptr) (*node, *node) {
 	}
 
 	// Determine the threshold before starting a new node.
-	var fillPercent = n.bucket.FillPercent
-	if fillPercent < minFillPercent {
-		fillPercent = minFillPercent
-	} else if fillPercent > maxFillPercent {
-		fillPercent = maxFillPercent
-	}
-	threshold := int(float64(pageSize) * fillPercent)
+	threshold := splitThreshold(pageSize, n.bucket.FillPercent)
 
 	// Determine split position and sizes of the two pages.
 	splitIndex, _ := n.splitIndex(threshold)
@@ -263,6 +257,18 @@ func (n *node) splitTwo(pageSize uintptr) (*node, *node) {
 	n.bucket.tx.stats.IncSplit(1)
 
 	return n, next
+}
+
+// splitThreshold is the size up to which splitTwo fills the first of the two
+// pages: pageSize scaled by fillPercent clamped to [minFillPercent,
+// maxFillPercent].
+func splitThreshold(pageSize uintptr, fillPercent float64) int {
+	if fillPercent < minFillPercent {
+		fillPercent = minFillPercent
+	} else if fillPercent > maxFillPercent {
+		fillPercent = maxFillPercent
+	}
+	return int(float64(pageSize) * fillPercent)
 }
 
 // splitIndex finds the position where a page will fill a given threshold.
