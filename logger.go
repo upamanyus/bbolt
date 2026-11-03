@@ -3,7 +3,6 @@ package bbolt
 // See https://github.com/etcd-io/raft/blob/main/logger.go
 import (
 	"fmt"
-	"io"
 	"log"
 	"os"
 )
@@ -33,8 +32,28 @@ func getDiscardLogger() Logger {
 }
 
 var (
-	discardLogger = &DefaultLogger{Logger: log.New(io.Discard, "", 0)}
+	discardLogger Logger = &nopLogger{}
 )
+
+// nopLogger is bbolt's logger when Options.Logger is nil. It discards every
+// message without formatting it, as a DefaultLogger writing to io.Discard
+// does after formatting; Fatal and Panic still exit and panic.
+type nopLogger struct{}
+
+func (*nopLogger) Debug(v ...interface{})                   {}
+func (*nopLogger) Debugf(format string, v ...interface{})   {}
+func (*nopLogger) Error(v ...interface{})                   {}
+func (*nopLogger) Errorf(format string, v ...interface{})   {}
+func (*nopLogger) Info(v ...interface{})                    {}
+func (*nopLogger) Infof(format string, v ...interface{})    {}
+func (*nopLogger) Warning(v ...interface{})                 {}
+func (*nopLogger) Warningf(format string, v ...interface{}) {}
+func (*nopLogger) Fatal(v ...interface{})                   { os.Exit(1) }
+func (*nopLogger) Fatalf(format string, v ...interface{})   { os.Exit(1) }
+func (*nopLogger) Panic(v ...interface{})                   { panic(fmt.Sprint(v...)) }
+func (*nopLogger) Panicf(format string, v ...interface{}) {
+	panic(fmt.Sprintf(format, v...))
+}
 
 const (
 	calldepth = 2
