@@ -343,19 +343,25 @@ func (db *DB) getPageSize() (int, error) {
 	)
 
 	// Read the first meta page to determine the page size.
-	if pgSize, canRead, err := db.getPageSizeFromFirstMeta(); err != nil {
+	// A read error is returned: probing further on a failed read could take
+	// the page size from user data that happens to hold a valid meta.
+	if pgSize, canRead, err := db.getPageSizeFromFirstMeta(); err == nil {
+		return pgSize, nil
+	} else if err != berrors.ErrInvalid {
+		return 0, err
+	} else {
 		// We cannot read the page size from page 0, but can read page 0.
 		meta0CanRead = canRead
-	} else {
-		return pgSize, nil
 	}
 
 	// Read the second meta page to determine the page size.
-	if pgSize, canRead, err := db.getPageSizeFromSecondMeta(); err != nil {
+	if pgSize, canRead, err := db.getPageSizeFromSecondMeta(); err == nil {
+		return pgSize, nil
+	} else if err != berrors.ErrInvalid {
+		return 0, err
+	} else {
 		// We cannot read the page size from page 1, but can read page 1.
 		meta1CanRead = canRead
-	} else {
-		return pgSize, nil
 	}
 
 	// If we can't read the page size from both pages, but can read
@@ -377,7 +383,12 @@ func (db *DB) getPageSize() (int, error) {
 func (db *DB) getPageSizeFromFirstMeta() (int, bool, error) {
 	var buf [0x1000]byte
 	var metaCanRead bool
-	if bw, err := db.file.ReadAt(buf[:], 0); err == nil && bw == len(buf) {
+	bw, err := db.file.ReadAt(buf[:], 0)
+	if err != nil && err != io.EOF {
+		// An I/O error, not a short file: report it.
+		return 0, metaCanRead, err
+	}
+	if err == nil && bw == len(buf) {
 		metaCanRead = true
 		if m := db.pageInBuffer(buf[:], 0).Meta(); m.Validate() == nil {
 			return int(m.PageSize()), metaCanRead, nil
@@ -413,6 +424,10 @@ func (db *DB) getPageSizeFromSecondMeta() (int, bool, error) {
 			break
 		}
 		bw, err := db.file.ReadAt(buf[:], pos)
+		if err != nil && err != io.EOF {
+			// An I/O error: report it rather than probe further.
+			return 0, metaCanRead, err
+		}
 		if (err == nil && bw == len(buf)) || (err == io.EOF && int64(bw) == (fileSize-pos)) {
 			metaCanRead = true
 			if m := db.pageInBuffer(buf[:], 0).Meta(); m.Validate() == nil {
