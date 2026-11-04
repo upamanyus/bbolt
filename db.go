@@ -301,8 +301,9 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 		},
 	}
 
-	// Memory map the data file.
-	if err = db.mmap(options.InitialMmapSize); err != nil {
+	// Memory map the data file. No other goroutine can reach db yet, so
+	// mmaplock is not taken (as for every field Open sets above).
+	if err = db.mmapUnlocked(options.InitialMmapSize); err != nil {
 		_ = db.close()
 		lg.Errorf("failed to map db file (%s): %v", path, err)
 		return nil, err
@@ -325,7 +326,9 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 		}
 		if txErr != nil {
 			lg.Errorf("starting readwrite transaction failed: %v", txErr)
-			_ = db.close()
+			// The database is shared with its own transactions by now: close it
+			// under its locks.
+			_ = db.Close()
 			return nil, txErr
 		}
 	}
@@ -444,16 +447,25 @@ func (db *DB) getPageSizeFromSecondMeta() (int, bool, error) {
 // concurrent accesses being made to the freelist.
 func (db *DB) loadFreelist() {
 	db.freelistLoad.Do(func() {
-		db.freelist = newFreelist(db.FreelistType)
+		// The freelist is built aside and published under metalock, which
+		// guards db.freelist for read transactions (beginTx, removeTx); the
+		// scan's own read transaction then sees no freelist, so it records
+		// no read-only txid (it would have added and removed the same one).
+		fl := newFreelist(db.FreelistType)
 		if !db.hasSyncedFreelist() {
 			// Reconstruct free list by scanning the DB.
-			db.freelist.Init(db.freepages())
+			fl.Init(db.freepages())
 		} else {
 			// Read free list from freelist page.
-			db.freelist.Read(db.page(db.meta().Freelist()))
+			fl.Read(db.page(db.meta().Freelist()))
 		}
+		db.metalock.Lock()
+		db.freelist = fl
+		db.metalock.Unlock()
 		if db.stats != nil {
-			db.stats.FreePageN = db.freelist.FreeCount()
+			db.statlock.Lock()
+			db.stats.FreePageN = fl.FreeCount()
+			db.statlock.Unlock()
 		}
 	})
 }
@@ -476,10 +488,15 @@ func (db *DB) fileSize() (int, error) {
 
 // mmap opens the underlying memory-mapped file and initializes the meta references.
 // minsz is the minimum size that the new mmap can be.
-func (db *DB) mmap(minsz int) (err error) {
+func (db *DB) mmap(minsz int) error {
 	db.mmaplock.Lock()
 	defer db.mmaplock.Unlock()
+	return db.mmapUnlocked(minsz)
+}
 
+// mmapUnlocked is mmap without taking mmaplock: the caller holds it, or no
+// other goroutine can reach db yet (Open, before it returns).
+func (db *DB) mmapUnlocked(minsz int) (err error) {
 	lg := db.Logger()
 
 	// Ensure the size is at least the minimum size.
