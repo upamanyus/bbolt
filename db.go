@@ -317,6 +317,20 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 		return db, nil
 	}
 
+	// Make the state Open read durable before any commit can reuse pages.
+	// After a process crash (kill -9, a panic) between a commit's meta write
+	// and its fdatasync, the meta is still in the page cache: Open reads it,
+	// and the next commits may overwrite pages only the previous, durable meta
+	// references. A power loss before something syncs the file would then
+	// bring back that meta over the overwritten pages.
+	if !db.NoSync || common.IgnoreNoSync {
+		if err = fdatasync(db); err != nil {
+			_ = db.close()
+			lg.Errorf("failed to sync db file (%s): %v", path, err)
+			return nil, err
+		}
+	}
+
 	// Flush freelist when transitioning from no sync to sync so
 	// NoFreelistSync unaware boltdb can open the db later.
 	if !db.NoFreelistSync && !db.hasSyncedFreelist() {
