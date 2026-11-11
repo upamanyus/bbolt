@@ -325,7 +325,9 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 	// bring back that meta over the overwritten pages.
 	if !db.NoSync || common.IgnoreNoSync {
 		if err = fdatasync(db); err != nil {
-			_ = db.close()
+			// Close under the locks, as for a failed transaction below
+			// (nothing else holds db yet).
+			_ = db.Close()
 			lg.Errorf("failed to sync db file (%s): %v", path, err)
 			return nil, err
 		}
