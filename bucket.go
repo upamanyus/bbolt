@@ -17,6 +17,13 @@ const (
 	MaxValueSize = (1 << 31) - 2
 )
 
+// maxEntrySize is the largest entry (key plus value, in bytes) Put accepts. A leaf page holds
+// up to four entries whatever their size (node.splitTwo never splits a node of at most
+// 2*minKeysPerPage entries), and a page's buffer must stay below MaxAllocSize, or Commit
+// (WriteInodeToPage) or a later read (leafPageElement.Value) panics; MaxValueSize alone does not
+// ensure it.
+const maxEntrySize = 1 << 28
+
 const (
 	minFillPercent = 0.1
 	maxFillPercent = 1.0
@@ -470,6 +477,8 @@ func (b *Bucket) Put(key []byte, value []byte) (err error) {
 	} else if len(key) > MaxKeySize {
 		return errors.ErrKeyTooLarge
 	} else if int64(len(value)) > MaxValueSize {
+		return errors.ErrValueTooLarge
+	} else if int64(len(value)) > maxEntrySize-int64(len(key)) {
 		return errors.ErrValueTooLarge
 	}
 

@@ -1228,6 +1228,43 @@ func TestBucket_Put_ValueTooLarge(t *testing.T) {
 	}
 }
 
+// Ensure that Put refuses an entry (key plus value) above 2^28 bytes, which a leaf page of four
+// such entries could not hold within MaxAllocSize, and accepts one at that bound, which commits
+// and reads back.
+func TestBucket_Put_EntryTooLarge(t *testing.T) {
+	if os.Getenv("DRONE") == "true" {
+		t.Skip("not enough RAM for test")
+	}
+
+	db := btesting.MustCreateDB(t)
+	key := []byte("foo")
+	const entryMax = 1 << 28
+
+	if err := db.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucket([]byte("widgets"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Put(key, make([]byte, entryMax-len(key)+1)); err != berrors.ErrValueTooLarge {
+			t.Fatalf("over the bound: unexpected error: %v", err)
+		}
+		if err := b.Put(key, make([]byte, entryMax-len(key))); err != nil {
+			t.Fatalf("at the bound: unexpected error: %v", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.View(func(tx *bolt.Tx) error {
+		if v := tx.Bucket([]byte("widgets")).Get(key); len(v) != entryMax-len(key) {
+			t.Fatalf("at the bound: read back %d bytes", len(v))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Ensure a bucket can calculate stats.
 func TestBucket_Stats(t *testing.T) {
 	if testing.Short() {
