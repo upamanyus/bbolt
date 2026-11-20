@@ -273,11 +273,11 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 		_ = db.close()
 		lg.Errorf("failed to get db file's stats (%s): %v", path, err)
 		return nil, statErr
-	} else if zero, zerr := db.metasZero(info.Size()); zerr != nil {
+	} else if initialize, zerr := db.needsInit(info.Size()); zerr != nil {
 		_ = db.close()
-		lg.Errorf("failed to read db file's meta pages (%s): %v", path, zerr)
+		lg.Errorf("failed to read db file's initial pages (%s): %v", path, zerr)
 		return nil, zerr
-	} else if info.Size() == 0 || zero {
+	} else if initialize {
 		// Initialize new files, and files whose init was interrupted, with meta pages.
 		if err = db.init(); err != nil {
 			// clean up file descriptor on initialization fail
@@ -719,22 +719,12 @@ func (db *DB) init() error {
 		m.SetChecksum(m.Sum64())
 	}
 
-	// Write an empty freelist at page 3.
-	p := db.pageInBuffer(buf, common.Pgid(2))
-	p.SetId(2)
-	p.SetFlags(common.FreelistPageFlag)
-	p.SetCount(0)
-
-	// Write an empty leaf page at page 4.
-	p = db.pageInBuffer(buf, common.Pgid(3))
-	p.SetId(3)
-	p.SetFlags(common.LeafPageFlag)
-	p.SetCount(0)
+	db.initDataPages(buf)
 
 	// Write the four pages with the meta pages zero, and sync, before the metas: a meta must
 	// never be durable before the freelist and root pages it points at, and a crash before the
 	// metas reach the disk leaves meta pages that Open recognizes as an interrupted init
-	// (all zero) and initializes again.
+	// when its bytes match the first write.
 	pages := make([]byte, db.pageSize*4)
 	copy(pages[db.pageSize*2:], buf[db.pageSize*2:])
 	if _, err := db.ops.writeAt(pages, 0); err != nil {
@@ -758,9 +748,53 @@ func (db *DB) init() error {
 	return nil
 }
 
-// metasZero reports whether every byte the file holds of its two meta pages is zero: an init
-// interrupted before its metas reached the disk (init writes the other pages first), which a
-// database never otherwise has.
+// initDataPages sets up the empty freelist and root in a zeroed buffer.
+func (db *DB) initDataPages(buf []byte) {
+	// Write an empty freelist at page 2.
+	p := db.pageInBuffer(buf, common.Pgid(2))
+	p.SetId(2)
+	p.SetFlags(common.FreelistPageFlag)
+	p.SetCount(0)
+
+	// Write an empty leaf page at page 3.
+	p = db.pageInBuffer(buf, common.Pgid(3))
+	p.SetId(3)
+	p.SetFlags(common.LeafPageFlag)
+	p.SetCount(0)
+}
+
+// needsInit recognizes a new file or the first write of an interrupted init.
+// Before its first sync, any subset of that write may have reached disk.
+func (db *DB) needsInit(size int64) (bool, error) {
+	if size == 0 {
+		return true, nil
+	}
+	if size > int64(db.pageSize)*4 {
+		return false, nil
+	}
+	zero, err := db.metasZero(size)
+	if err != nil || !zero {
+		return false, err
+	}
+	offset := int64(db.pageSize) * 2
+	if size <= offset {
+		return true, nil
+	}
+	image := make([]byte, db.pageSize*4)
+	db.initDataPages(image)
+	tail := make([]byte, size-offset)
+	if _, err := db.file.ReadAt(tail, offset); err != nil {
+		return false, err
+	}
+	for i, b := range tail {
+		if b != 0 && b != image[int(offset)+i] {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// metasZero checks the bytes present in the first two pages.
 func (db *DB) metasZero(size int64) (bool, error) {
 	n := int64(db.pageSize * 2)
 	if size < n {
