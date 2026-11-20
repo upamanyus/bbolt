@@ -266,11 +266,11 @@ func (n *node) splitTwo(pageSize uintptr) (*node, *node) {
 // entry always fits. Relative offsets in subsequent elements start later.
 func (n *node) readableLeafPrefix(end uintptr) uintptr {
 	var used uintptr
-	for i := uintptr(0); i < end; i++ {
+	for i := 0; i < int(end); i++ {
 		inode := &n.inodes[i]
 		size := common.LeafPageElementSize + uintptr(len(inode.Key())) + uintptr(len(inode.Value()))
 		if i > 0 && uint64(used)+uint64(size) > common.MaxAllocSize {
-			return i
+			return uintptr(i)
 		}
 		used += size
 	}
