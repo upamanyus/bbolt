@@ -106,6 +106,27 @@ func TestNode_write_LeafPage(t *testing.T) {
 	}
 }
 
+// Splitting uses the lengths without reading the shared backing array.
+func TestNode_split_LargeLeaf(t *testing.T) {
+	value := make([]byte, common.MaxAllocSize/2)
+	for _, count := range []int{2, 4, 5} {
+		n := &node{isLeaf: true, inodes: make(common.Inodes, count), bucket: &Bucket{tx: &Tx{}}}
+		for i := range n.inodes {
+			n.inodes[i].SetKey([]byte{byte(i + 1)})
+			n.inodes[i].SetValue(value)
+		}
+		nodes := n.split(4096)
+		if len(nodes) != count {
+			t.Fatalf("split %d large entries into %d pages", count, len(nodes))
+		}
+		for i, part := range nodes {
+			if len(part.inodes) != 1 || part.inodes[0].Key()[0] != byte(i+1) {
+				t.Fatalf("page %d lost or reordered an entry", i)
+			}
+		}
+	}
+}
+
 // Ensure that a node can split into appropriate subgroups.
 func TestNode_split(t *testing.T) {
 	// Create a node.

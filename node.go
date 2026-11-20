@@ -227,17 +227,19 @@ func (n *node) split(pageSize uintptr) []*node {
 // splitTwo breaks up a node into two smaller nodes, if appropriate.
 // This should only be called from the split() function.
 func (n *node) splitTwo(pageSize uintptr) (*node, *node) {
-	// Ignore the split if the page doesn't have at least enough nodes for
-	// two pages or if the nodes can fit in a single page.
-	if len(n.inodes) <= (common.MinKeysPerPage*2) || n.sizeLessThan(pageSize) {
+	// First choose the normal fill and minimum-key split.
+	splitIndex := uintptr(len(n.inodes))
+	if len(n.inodes) > common.MinKeysPerPage*2 && !n.sizeLessThan(pageSize) {
+		splitIndex, _ = n.splitIndex(splitThreshold(pageSize, n.bucket.FillPercent))
+	}
+	// A leaf with only a few very large values can exceed the addressable
+	// range even when its key count would ordinarily keep it together.
+	if n.isLeaf {
+		splitIndex = n.readableLeafPrefix(splitIndex)
+	}
+	if splitIndex == uintptr(len(n.inodes)) {
 		return n, nil
 	}
-
-	// Determine the threshold before starting a new node.
-	threshold := splitThreshold(pageSize, n.bucket.FillPercent)
-
-	// Determine split position and sizes of the two pages.
-	splitIndex, _ := n.splitIndex(threshold)
 
 	// Split node into two separate nodes.
 	// If there's no parent then we'll need to create one.
@@ -257,6 +259,22 @@ func (n *node) splitTwo(pageSize uintptr) (*node, *node) {
 	n.bucket.tx.stats.IncSplit(1)
 
 	return n, next
+}
+
+// readableLeafPrefix limits the proposed piece to one address window, counted
+// from the first leaf element. Put bounds each individual element, so a single
+// entry always fits. Relative offsets in subsequent elements start later.
+func (n *node) readableLeafPrefix(end uintptr) uintptr {
+	var used uintptr
+	for i := uintptr(0); i < end; i++ {
+		inode := &n.inodes[i]
+		size := common.LeafPageElementSize + uintptr(len(inode.Key())) + uintptr(len(inode.Value()))
+		if i > 0 && uint64(used)+uint64(size) > common.MaxAllocSize {
+			return i
+		}
+		used += size
+	}
+	return end
 }
 
 // splitThreshold is the size up to which splitTwo fills the first of the two

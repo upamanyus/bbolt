@@ -19,6 +19,7 @@ import (
 	bolt "go.etcd.io/bbolt"
 	berrors "go.etcd.io/bbolt/errors"
 	"go.etcd.io/bbolt/internal/btesting"
+	"go.etcd.io/bbolt/internal/common"
 )
 
 // Ensure that a bucket that gets a non-existent key returns nil.
@@ -1228,41 +1229,44 @@ func TestBucket_Put_ValueTooLarge(t *testing.T) {
 	}
 }
 
-// Ensure that Put refuses an entry (key plus value) above 2^28 bytes, which a leaf page of four
-// such entries could not hold within MaxAllocSize, and accepts one at that bound, which commits
-// and reads back.
-func TestBucket_Put_EntryTooLarge(t *testing.T) {
-	if os.Getenv("DRONE") == "true" {
-		t.Skip("not enough RAM for test")
+// An entry just above the former 256 MiB cap fits in a leaf on 64-bit platforms.
+func TestBucket_Put_LargeReadableEntry(t *testing.T) {
+	const size = 1 << 28
+	if common.MaxAllocSize <= size || os.Getenv("DRONE") == "true" {
+		t.Skip("requires a 64-bit address space and large database file")
 	}
-
 	db := btesting.MustCreateDB(t)
 	key := []byte("foo")
-	const entryMax = 1 << 28
-
-	if err := db.Update(func(tx *bolt.Tx) error {
+	value := make([]byte, size)
+	value[size-1] = 83
+	require.NoError(t, db.Update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucket([]byte("widgets"))
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
-		if err := b.Put(key, make([]byte, entryMax-len(key)+1)); err != berrors.ErrValueTooLarge {
-			t.Fatalf("over the bound: unexpected error: %v", err)
-		}
-		if err := b.Put(key, make([]byte, entryMax-len(key))); err != nil {
-			t.Fatalf("at the bound: unexpected error: %v", err)
-		}
+		return b.Put(key, value)
+	}))
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		require.True(t, bytes.Equal(value, tx.Bucket([]byte("widgets")).Get(key)))
 		return nil
-	}); err != nil {
-		t.Fatal(err)
+	}))
+}
+
+func TestBucket_Put_EntryTooLarge(t *testing.T) {
+	if os.Getenv("DRONE") == "true" {
+		t.Skip("requires a large address space")
 	}
-	if err := db.View(func(tx *bolt.Tx) error {
-		if v := tx.Bucket([]byte("widgets")).Get(key); len(v) != entryMax-len(key) {
-			t.Fatalf("at the bound: read back %d bytes", len(v))
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	db := btesting.MustCreateDB(t)
+	key := []byte("foo")
+	const payloadMax = common.MaxAllocSize - int(common.LeafPageElementSize)
+	value := make([]byte, payloadMax-len(key)+1)
+	tx, err := db.Begin(true)
+	require.NoError(t, err)
+	defer tx.Rollback()
+	b, err := tx.CreateBucket([]byte("widgets"))
+	require.NoError(t, err)
+	require.ErrorIs(t, b.Put(key, value), berrors.ErrValueTooLarge)
+	require.NoError(t, b.Put(key, value[:len(value)-1]))
 }
 
 // Ensure a bucket can calculate stats.

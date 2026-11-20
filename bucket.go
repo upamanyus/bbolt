@@ -17,12 +17,9 @@ const (
 	MaxValueSize = (1 << 31) - 2
 )
 
-// maxEntrySize is the largest entry (key plus value, in bytes) Put accepts. A leaf page holds
-// up to four entries whatever their size (node.splitTwo never splits a node of at most
-// 2*minKeysPerPage entries), and a page's buffer must stay below MaxAllocSize, or Commit
-// (WriteInodeToPage) or a later read (leafPageElement.Value) panics; MaxValueSize alone does not
-// ensure it.
-const maxEntrySize = 1 << 28
+// A leaf element addresses its key and value starting at its own header.
+// Even alone on a page, its header and payload must fit in that window.
+const maxEntrySize = common.MaxAllocSize - int64(common.LeafPageElementSize)
 
 const (
 	minFillPercent = 0.1
