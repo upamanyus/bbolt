@@ -1523,8 +1523,10 @@ func (o *Options) String() string {
 		return "{}"
 	}
 
-	return fmt.Sprintf("{Timeout: %s, NoGrowSync: %t, NoFreelistSync: %t, PreLoadFreelist: %t, FreelistType: %s, ReadOnly: %t, MmapFlags: %x, InitialMmapSize: %d, PageSize: %d, MaxSize: %d, NoSync: %t, OpenFile: %p, Mlock: %t, Logger: %p, NoStatistics: %t}",
-		o.Timeout, o.NoGrowSync, o.NoFreelistSync, o.PreLoadFreelist, o.FreelistType, o.ReadOnly, o.MmapFlags, o.InitialMmapSize, o.PageSize, o.MaxSize, o.NoSync, o.OpenFile, o.Mlock, o.Logger, o.NoStatistics)
+	// %v of the bools (as %t), the free-list type as a string (byte-identical); whether OpenFile
+	// and Logger are set in place of their addresses (%p), which are not reproducible.
+	return fmt.Sprintf("{Timeout: %s, NoGrowSync: %v, NoFreelistSync: %v, PreLoadFreelist: %v, FreelistType: %s, ReadOnly: %v, MmapFlags: %x, InitialMmapSize: %d, PageSize: %d, MaxSize: %d, NoSync: %v, OpenFile: %v, Mlock: %v, Logger: %v, NoStatistics: %v}",
+		o.Timeout, o.NoGrowSync, o.NoFreelistSync, o.PreLoadFreelist, string(o.FreelistType), o.ReadOnly, o.MmapFlags, o.InitialMmapSize, o.PageSize, o.MaxSize, o.NoSync, o.OpenFile != nil, o.Mlock, o.Logger != nil, o.NoStatistics)
 
 }
 
