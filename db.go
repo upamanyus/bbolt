@@ -294,6 +294,21 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 		}
 	}
 
+	// Make the state Open read durable before any commit can reuse pages.
+	// After a process crash (kill -9, a panic) between a commit's meta write
+	// and its fdatasync, the meta is still in the page cache: Open reads it,
+	// and the next commits may overwrite pages only the previous, durable meta
+	// references. A power loss before something syncs the file would then
+	// bring back that meta over the overwritten pages. Synced before the file
+	// is mapped (nothing below writes it before the first commit).
+	if !db.readOnly && (!db.NoSync || common.IgnoreNoSync) {
+		if err = fdatasync(db); err != nil {
+			_ = db.close()
+			lg.Errorf("failed to sync db file (%s): %v", path, err)
+			return nil, err
+		}
+	}
+
 	// Initialize page pool.
 	db.pagePool = sync.Pool{
 		New: func() interface{} {
@@ -315,22 +330,6 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 
 	if db.readOnly {
 		return db, nil
-	}
-
-	// Make the state Open read durable before any commit can reuse pages.
-	// After a process crash (kill -9, a panic) between a commit's meta write
-	// and its fdatasync, the meta is still in the page cache: Open reads it,
-	// and the next commits may overwrite pages only the previous, durable meta
-	// references. A power loss before something syncs the file would then
-	// bring back that meta over the overwritten pages.
-	if !db.NoSync || common.IgnoreNoSync {
-		if err = fdatasync(db); err != nil {
-			// Close under the locks, as for a failed transaction below
-			// (nothing else holds db yet).
-			_ = db.Close()
-			lg.Errorf("failed to sync db file (%s): %v", path, err)
-			return nil, err
-		}
 	}
 
 	// Flush freelist when transitioning from no sync to sync so
