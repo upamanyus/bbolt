@@ -1,6 +1,7 @@
 package bbolt
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -269,8 +270,12 @@ func Open(path string, mode os.FileMode, options *Options) (db *DB, err error) {
 		_ = db.close()
 		lg.Errorf("failed to get db file's stats (%s): %v", path, err)
 		return nil, statErr
-	} else if info.Size() == 0 {
-		// Initialize new files with meta pages.
+	} else if initialize, ierr := db.needsInit(info.Size()); ierr != nil {
+		_ = db.close()
+		lg.Errorf("failed to read db file's initial pages (%s): %v", path, ierr)
+		return nil, ierr
+	} else if initialize {
+		// Initialize new files, and files whose initialization was interrupted, with meta pages.
 		if err = db.init(); err != nil {
 			// clean up file descriptor on initialization fail
 			_ = db.close()
@@ -643,8 +648,42 @@ func (db *DB) mrelock(fileSizeFrom, fileSizeTo int) error {
 }
 
 // init creates a new database file and initializes its meta pages.
+//
+// The freelist and root pages are written and synced before the meta pages that point at them,
+// so that a crash never leaves a valid meta over a missing page. A crash before the second sync
+// completes leaves a file whose every byte is zero or the byte init writes there (meta pages torn
+// or not written at all): needsInit recognizes it, and the next Open initializes it again.
 func (db *DB) init() error {
-	// Create two meta pages on a buffer.
+	buf := db.initImage()
+
+	// The freelist and root pages first, with zero meta pages.
+	pages := make([]byte, len(buf))
+	copy(pages[db.pageSize*2:], buf[db.pageSize*2:])
+	if _, err := db.ops.writeAt(pages, 0); err != nil {
+		db.Logger().Errorf("writeAt failed: %w", err)
+		return err
+	}
+	if err := fdatasync(db); err != nil {
+		db.Logger().Errorf("[GOOS: %s, GOARCH: %s] fdatasync failed: %w", runtime.GOOS, runtime.GOARCH, err)
+		return err
+	}
+
+	// Then the two meta pages.
+	if _, err := db.ops.writeAt(buf[:db.pageSize*2], 0); err != nil {
+		db.Logger().Errorf("writeAt failed: %w", err)
+		return err
+	}
+	if err := fdatasync(db); err != nil {
+		db.Logger().Errorf("[GOOS: %s, GOARCH: %s] fdatasync failed: %w", runtime.GOOS, runtime.GOARCH, err)
+		return err
+	}
+
+	return nil
+}
+
+// initImage returns the four pages init writes: two meta pages, an empty freelist and an empty
+// root leaf.
+func (db *DB) initImage() []byte {
 	buf := make([]byte, db.pageSize*4)
 	for i := 0; i < 2; i++ {
 		p := db.pageInBuffer(buf, common.Pgid(i))
@@ -663,29 +702,49 @@ func (db *DB) init() error {
 		m.SetChecksum(m.Sum64())
 	}
 
-	// Write an empty freelist at page 3.
+	// An empty freelist at page 2.
 	p := db.pageInBuffer(buf, common.Pgid(2))
 	p.SetId(2)
 	p.SetFlags(common.FreelistPageFlag)
 	p.SetCount(0)
 
-	// Write an empty leaf page at page 4.
+	// An empty leaf page at page 3.
 	p = db.pageInBuffer(buf, common.Pgid(3))
 	p.SetId(3)
 	p.SetFlags(common.LeafPageFlag)
 	p.SetCount(0)
 
-	// Write the buffer to our data file.
-	if _, err := db.ops.writeAt(buf, 0); err != nil {
-		db.Logger().Errorf("writeAt failed: %w", err)
-		return err
-	}
-	if err := fdatasync(db); err != nil {
-		db.Logger().Errorf("[GOOS: %s, GOARCH: %s] fdatasync failed: %w", runtime.GOOS, runtime.GOARCH, err)
-		return err
-	}
+	return buf
+}
 
-	return nil
+// needsInit reports whether Open must initialize a file of the given size: a new (empty) file, or
+// one whose initialization a crash interrupted. Such a file is at most four pages long, every byte
+// it holds is zero or the byte init writes there, and it is not init's whole image (a database
+// whose init completed opens as usual). Its state is the empty database's, so initializing it
+// again loses nothing. Any other database holds a byte init does not write: a commit writes a
+// page past the fourth, or a meta page of another transaction ID. A read-only Open initializes
+// only an empty file, as before.
+func (db *DB) needsInit(size int64) (bool, error) {
+	if size == 0 {
+		return true, nil
+	}
+	if db.readOnly || size > int64(db.pageSize)*4 {
+		return false, nil
+	}
+	data := make([]byte, size)
+	if _, err := db.file.ReadAt(data, 0); err != nil {
+		return false, err
+	}
+	image := db.initImage()
+	if bytes.Equal(data, image) {
+		return false, nil
+	}
+	for i, b := range data {
+		if b != 0 && b != image[i] {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // Close releases all database resources.

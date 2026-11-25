@@ -436,6 +436,14 @@ func TestOpen_FileTooSmall(t *testing.T) {
 		t.Fatal(err)
 	}
 	pageSize := int64(db.Info().PageSize)
+	// A commit, so that the truncated file is not one an interrupted initialization leaves
+	// (which Open initializes again).
+	if err = db.Update(func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucket([]byte("b"))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err = db.Close(); err != nil {
 		t.Fatal(err)
 	}
